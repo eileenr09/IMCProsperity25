@@ -1,0 +1,101 @@
+from typing import Dict, List
+from datamodel import Order, OrderDepth, TradingState, ConversionObservation
+
+
+class Trader:
+    def __init__(self):
+        self.macaron_limit = 75
+        self.conversion_limit = 10
+        self.estimated_fee = 2.0
+        self.smoothing = 0.2
+        self.spread = 2  # spread around midprice for market making
+
+    def run(self, state: TradingState) -> (Dict[str, List[Order]], int, str):
+        """
+        Main trading method for MAGNIFICENT_MACARONS that combines market making
+        with conversion arbitrage.
+        """
+        result: Dict[str, List[Order]] = {}
+        conversions = 0
+        traderData = "{}"
+
+        product = "MAGNIFICENT_MACARONS"
+
+        if product not in state.order_depths or product not in state.observations.conversionObservations:
+            return result, conversions, traderData
+
+        order_depth: OrderDepth = state.order_depths[product]
+        observation: ConversionObservation = state.observations.conversionObservations[product]
+
+        orders: List[Order] = []
+
+        position = state.position.get(product, 0)
+
+        # Market data
+        best_ask = min(order_depth.sell_orders.keys()) if order_depth.sell_orders else None
+        best_bid = max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None
+
+        # Chef conversion prices
+        chef_bid = observation.bidPrice
+        chef_ask = observation.askPrice
+        transport_fee = observation.transportFees
+        import_tariff = observation.importTariff
+        export_tariff = observation.exportTariff
+
+        # True prices for buy/sell
+        true_buy = chef_ask + transport_fee + import_tariff
+        true_sell = chef_bid - transport_fee - export_tariff
+
+        # Dynamically estimate fees if no arbitrage seen
+        if best_ask is not None and chef_bid - best_ask < self.estimated_fee:
+            self.estimated_fee = (1 - self.smoothing) * self.estimated_fee + self.smoothing * (best_ask - chef_bid)
+
+        if best_bid is not None and best_bid - chef_ask < self.estimated_fee:
+            self.estimated_fee = (1 - self.smoothing) * self.estimated_fee + self.smoothing * (chef_ask - best_bid)
+
+        # -------------------------------
+        # Arbitrage Logic via Conversion
+        # -------------------------------
+
+        # Buy from chef, sell to market
+        if best_bid is not None and true_buy + self.estimated_fee < best_bid and conversions < self.conversion_limit:
+            volume = min(self.macaron_limit - position, order_depth.buy_orders[best_bid])
+            volume = min(volume, self.conversion_limit - conversions)
+            if volume > 0:
+                print("ARBITRAGE: Buy from chef & sell", volume, "x", best_bid)
+                orders.append(Order(product, best_bid, -volume))
+                conversions += volume
+
+        # Buy from market, sell to chef
+        if best_ask is not None and true_sell - self.estimated_fee > best_ask and conversions < self.conversion_limit:
+            volume = min(self.macaron_limit + position, -order_depth.sell_orders[best_ask])
+            volume = min(volume, self.conversion_limit - conversions)
+            if volume > 0:
+                print("ARBITRAGE: Buy", volume, "x", best_ask, "& sell to chef")
+                orders.append(Order(product, best_ask, volume))
+                conversions += volume
+
+        # ---------------------
+        # Market Making Logic
+        # ---------------------
+        if best_bid is not None and best_ask is not None:
+            mid_price = (best_bid + best_ask) / 2
+            buy_price = int(mid_price - self.spread)
+            sell_price = int(mid_price + self.spread)
+
+            buy_volume = min(5, self.macaron_limit - position)
+            sell_volume = min(5, self.macaron_limit + position)
+
+            if buy_volume > 0:
+                print("MM BUY", buy_volume, "x", buy_price)
+                orders.append(Order(product, buy_price, buy_volume))
+
+            if sell_volume > 0:
+                print("MM SELL", sell_volume, "x", sell_price)
+                orders.append(Order(product, sell_price, -sell_volume))
+
+        # Final order list
+        result[product] = orders
+
+        # Return the output dictionary, conversions count, and trader data
+        return result, conversions, traderData
